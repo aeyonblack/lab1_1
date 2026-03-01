@@ -56,3 +56,17 @@ hc_output/
 # 7. OS Generated Files (Windows/Mac)
 .DS_Store
 Thumbs.db
+
+# 8. Docs (PDFs, walkthrough guides, extracted text)
+docs/
+
+# 9. Python (venv, bytecode, caches)
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# 10. Reference / Auto-generated Files
+DE0_NANO_SOC.qsf
+c5_pin_model_dump.txt
