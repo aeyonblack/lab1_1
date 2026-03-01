@@ -1,0 +1,58 @@
+# ========================================
+# Intel Quartus Prime .gitignore Template
+# ========================================
+
+# 1. Quartus Project Workspace Settings (User Specific)
+*.qws
+
+# 2. Compilation Databases (Massive generated files)
+db/
+incremental_db/
+*.db
+*.cdb
+*.hdb
+*.ddb
+*.rdb
+*.tdb
+
+# 3. Output Files (Programming binaries and reports)
+output_files/
+*.sof
+*.pof
+*.jdi
+*.pin
+*.sld
+*.rpt
+*.summary
+*.smsg
+*.done
+*.qmsg
+*.bak
+
+# 4. Simulation & Timing Temporary Files
+simulation/
+timing/
+*.vcd
+*.wlf
+modelsim.ini
+
+# 5. Synthesis/Analysis Temporary Folders
+greybox_tmp/
+slid_dir/
+hc_output/
+*.chm
+*.htm
+*.html
+
+# 6. Qsys / Platform Designer Generated Files
+# Note: You MUST keep the .qsys file itself, but ignore the generated junk!
+*.sopcinfo
+*.cmp
+# If you have a Qsys system named 'soc_system', uncomment the lines below:
+# soc_system/synthesis/
+# soc_system/sim/
+# soc_system/greybox/
+
+# 7. OS Generated Files (Windows/Mac)
+.DS_Store
+Thumbs.db

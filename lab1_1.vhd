@@ -1,0 +1,13 @@
+LIBRARY ieee;
+USE ieee.std_logic_1164.all;
+
+ENTITY lab1_1 IS
+PORT (SW		: IN STD_LOGIC_VECTOR(3 DOWNTO 0);
+		LED 	: OUT STD_LOGIC_VECTOR(3 DOWNTO 0)
+		);
+END lab1_1;
+
+ARCHITECTURE Behaviour OF lab1_1 IS
+BEGIN
+	LED <= SW;
+END Behaviour;
