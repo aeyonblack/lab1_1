@@ -6,6 +6,7 @@
 
 LIBRARY ieee;
 USE ieee.std_logic_1164.all;
+USE ieee.numeric_std.all;
 
 ENTITY uart_tb IS
 END uart_tb;

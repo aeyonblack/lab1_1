@@ -2,6 +2,8 @@
 -- uart_tx.vhd
 -- UART Transmitter.
 -- Serialises an 8-bit byte into an 8N1 UART frame.
+-- Uses an internal counter (not the free-running baud_tick)
+-- to guarantee every bit is held for exactly one full period.
 -- ============================================================
 
 LIBRARY ieee;
@@ -9,29 +11,30 @@ USE ieee.std_logic_1164.all;
 USE ieee.numeric_std.all;
 
 ENTITY uart_tx IS
+    GENERIC (
+        CLK_FREQ  : INTEGER := 50_000_000;
+        BAUD_RATE : INTEGER := 115_200
+    );
     PORT (
         clk       : IN  STD_LOGIC;
         rst       : IN  STD_LOGIC;
-        tx_data   : IN  STD_LOGIC_VECTOR(7 DOWNTO 0);     -- Byte to send
-        tx_start  : IN  STD_LOGIC;                         -- Pulse to begin
-        baud_tick : IN  STD_LOGIC;                         -- 1x baud rate tick
-        tx        : OUT STD_LOGIC;                         -- Serial output line
-        tx_busy   : OUT STD_LOGIC                          -- HIGH while busy
+        tx_data   : IN  STD_LOGIC_VECTOR(7 DOWNTO 0);
+        tx_start  : IN  STD_LOGIC;
+        tx        : OUT STD_LOGIC;
+        tx_busy   : OUT STD_LOGIC
     );
 END uart_tx;
 
 ARCHITECTURE rtl OF uart_tx IS
 
+    CONSTANT CLKS_PER_BIT : INTEGER := CLK_FREQ / BAUD_RATE - 1;
+
     TYPE state_type IS (IDLE, START, DATA, STOP);
     SIGNAL state : state_type := IDLE;
 
-    -- Local copy of the data to transmit.
-    -- We latch it at tx_start so the caller can change tx_data freely
-    -- while we're still sending.
     SIGNAL shift_reg : STD_LOGIC_VECTOR(7 DOWNTO 0) := (OTHERS => '0');
-
-    -- Which bit (0..7) we are currently transmitting
-    SIGNAL bit_idx : INTEGER RANGE 0 TO 7 := 0;
+    SIGNAL bit_idx   : INTEGER RANGE 0 TO 7 := 0;
+    SIGNAL clk_count : INTEGER RANGE 0 TO CLKS_PER_BIT := 0;
 
 BEGIN
 
@@ -40,53 +43,42 @@ BEGIN
         IF rising_edge(clk) THEN
             IF rst = '1' THEN
                 state     <= IDLE;
-                tx        <= '1';      -- Idle line is HIGH
+                tx        <= '1';
                 tx_busy   <= '0';
                 bit_idx   <= 0;
+                clk_count <= 0;
                 shift_reg <= (OTHERS => '0');
 
             ELSE
                 CASE state IS
 
-                    -- ========================================
-                    -- IDLE: Hold TX line HIGH. Wait for the
-                    -- user to assert tx_start.
-                    -- ========================================
                     WHEN IDLE =>
-                        tx      <= '1';    -- Idle = HIGH
-                        tx_busy <= '0';
-                        bit_idx <= 0;
+                        tx        <= '1';
+                        tx_busy   <= '0';
+                        bit_idx   <= 0;
+                        clk_count <= 0;
 
                         IF tx_start = '1' THEN
-                            -- Latch the data and begin
                             shift_reg <= tx_data;
                             tx_busy   <= '1';
                             state     <= START;
                         END IF;
 
-                    -- ========================================
-                    -- START: Pull TX LOW for one bit period
-                    -- (the start bit).
-                    -- ========================================
                     WHEN START =>
-                        tx <= '0';    -- Start bit = LOW
+                        tx <= '0';   -- Start bit = LOW
 
-                        IF baud_tick = '1' THEN
-                            -- One bit period elapsed, move to data
-                            state <= DATA;
+                        IF clk_count = CLKS_PER_BIT THEN
+                            clk_count <= 0;
+                            state     <= DATA;
+                        ELSE
+                            clk_count <= clk_count + 1;
                         END IF;
 
-                    -- ========================================
-                    -- DATA: Output each bit for one bit period.
-                    -- LSB first: send shift_reg(0), then shift
-                    -- right to prepare the next bit.
-                    -- ========================================
                     WHEN DATA =>
-                        tx <= shift_reg(0);    -- Drive current LSB onto the line
+                        tx <= shift_reg(0);
 
-                        IF baud_tick = '1' THEN
-                            -- Shift the register right to bring the
-                            -- next bit into position 0
+                        IF clk_count = CLKS_PER_BIT THEN
+                            clk_count <= 0;
                             shift_reg <= '0' & shift_reg(7 DOWNTO 1);
 
                             IF bit_idx = 7 THEN
@@ -95,17 +87,18 @@ BEGIN
                             ELSE
                                 bit_idx <= bit_idx + 1;
                             END IF;
+                        ELSE
+                            clk_count <= clk_count + 1;
                         END IF;
 
-                    -- ========================================
-                    -- STOP: Drive TX HIGH for one bit period
-                    -- (the stop bit), then return to IDLE.
-                    -- ========================================
                     WHEN STOP =>
-                        tx <= '1';    -- Stop bit = HIGH
+                        tx <= '1';   -- Stop bit = HIGH
 
-                        IF baud_tick = '1' THEN
-                            state <= IDLE;
+                        IF clk_count = CLKS_PER_BIT THEN
+                            clk_count <= 0;
+                            state     <= IDLE;
+                        ELSE
+                            clk_count <= clk_count + 1;
                         END IF;
 
                 END CASE;

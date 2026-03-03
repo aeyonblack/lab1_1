@@ -1,10 +1,8 @@
 -- ============================================================
 -- lab1_1.vhd
 -- Top-level entity for EAS 410 Practical 1.
--- Integrates: baud_gen (×2), uart_rx, uart_tx, and
--- circular bit shifter.
---
--- Board: DE0-Nano-SoC (Cyclone V - 5CSEMA4U23C6)
+-- Simple datapath:
+--   RX byte -> circular shift by SW[1:0] -> TX byte
 -- ============================================================
 
 LIBRARY ieee;
@@ -17,22 +15,20 @@ ENTITY lab1_1 IS
         KEY          : IN  STD_LOGIC_VECTOR(1 DOWNTO 0);
         SW           : IN  STD_LOGIC_VECTOR(3 DOWNTO 0);
         LED          : OUT STD_LOGIC_VECTOR(7 DOWNTO 0);
-        ARDUINO_IO   : INOUT STD_LOGIC_VECTOR(15 DOWNTO 0)
+
+        -- Dedicated UART pins (Arduino header pins 0 and 1)
+        UART_RXD     : IN  STD_LOGIC;     -- PIN_AG13: data FROM PC
+        UART_TXD     : OUT STD_LOGIC      -- PIN_AF13: data TO PC
     );
 END lab1_1;
 
 ARCHITECTURE structural OF lab1_1 IS
-
-    -- ========================================================
-    -- Internal signals
-    -- ========================================================
 
     -- Clock and reset
     SIGNAL clk : STD_LOGIC;
     SIGNAL rst : STD_LOGIC;
 
     -- Baud rate ticks
-    SIGNAL baud_tick : STD_LOGIC;   -- 1x baud rate (for TX)
     SIGNAL os_tick   : STD_LOGIC;   -- 16x baud rate (for RX oversampling)
 
     -- UART RX outputs
@@ -43,9 +39,15 @@ ARCHITECTURE structural OF lab1_1 IS
     SIGNAL shifted_byte : STD_LOGIC_VECTOR(7 DOWNTO 0);
 
     -- UART TX control
-    SIGNAL tx_busy : STD_LOGIC;
+    SIGNAL tx_busy     : STD_LOGIC;
+    SIGNAL tx_start    : STD_LOGIC;
+    SIGNAL tx_data_reg : STD_LOGIC_VECTOR(7 DOWNTO 0);
 
-    -- Serial lines
+    -- One-byte pending buffer so RX results are not lost while TX is busy
+    SIGNAL pending_valid : STD_LOGIC;
+    SIGNAL pending_byte  : STD_LOGIC_VECTOR(7 DOWNTO 0);
+
+    -- Internal serial lines
     SIGNAL uart_rx_pin : STD_LOGIC;
     SIGNAL uart_tx_pin : STD_LOGIC;
 
@@ -54,38 +56,18 @@ BEGIN
     -- ========================================================
     -- Pin Mapping
     -- ========================================================
-
-    -- Map the 50 MHz clock input to our internal clock signal
     clk <= FPGA_CLK1_50;
+    rst <= NOT KEY(0);  -- KEY[0] is active-low
 
-    -- KEY[0] is active-LOW on the DE0-Nano-SoC.
-    -- We invert it so rst = '1' means "reset active" in our logic.
-    rst <= NOT KEY(0);
+    uart_rx_pin <= UART_RXD;       -- Direct input — no tristate
+    UART_TXD    <= uart_tx_pin;    -- Direct output — no tristate
 
-    -- ARDUINO_IO[0] is our UART RX (data FROM the PC)
-    uart_rx_pin <= ARDUINO_IO(0);
-
-    -- ARDUINO_IO[1] is our UART TX (data TO the PC)
-    ARDUINO_IO(1) <= uart_tx_pin;
-
-    -- Debug: show the last received byte on LEDs
+    -- Debug: show last received byte
     LED <= rx_data;
 
     -- ========================================================
     -- Module Instantiations
     -- ========================================================
-
-    -- 1x Baud Rate Generator (for transmitter)
-    baud_1x : ENTITY work.baud_gen
-        GENERIC MAP(
-            CLK_FREQ  => 50_000_000,
-            BAUD_RATE => 115_200
-        )
-        PORT MAP(
-            clk       => clk,
-            rst       => rst,
-            baud_tick => baud_tick
-        );
 
     -- 16x Oversampling Generator (for receiver)
     baud_16x : ENTITY work.baud_gen
@@ -110,14 +92,17 @@ BEGIN
             rx_done => rx_done
         );
 
-    -- UART Transmitter
+    -- UART Transmitter (self-timed — has its own internal baud counter)
     tx_inst : ENTITY work.uart_tx
+        GENERIC MAP(
+            CLK_FREQ  => 50_000_000,
+            BAUD_RATE => 115_200
+        )
         PORT MAP(
             clk       => clk,
             rst       => rst,
-            tx_data   => shifted_byte,  -- Send the SHIFTED byte back
-            tx_start  => rx_done,       -- Transmit as soon as a byte is received
-            baud_tick => baud_tick,
+            tx_data   => tx_data_reg,
+            tx_start  => tx_start,
             tx        => uart_tx_pin,
             tx_busy   => tx_busy
         );
@@ -125,26 +110,48 @@ BEGIN
     -- ========================================================
     -- Circular Bit Shifter
     -- ========================================================
-
     shift_proc : PROCESS(rx_data, SW)
     BEGIN
         CASE SW(1 DOWNTO 0) IS
             WHEN "00" =>
-                -- Rotate left by 1
-                shifted_byte <= rx_data(6 DOWNTO 0) & rx_data(7);
+                shifted_byte <= rx_data(6 DOWNTO 0) & rx_data(7);             -- L1
             WHEN "01" =>
-                -- Rotate right by 1
-                shifted_byte <= rx_data(0) & rx_data(7 DOWNTO 1);
+                shifted_byte <= rx_data(0) & rx_data(7 DOWNTO 1);             -- R1
             WHEN "10" =>
-                -- Rotate left by 2
-                shifted_byte <= rx_data(5 DOWNTO 0) & rx_data(7 DOWNTO 6);
-            WHEN "11" =>
-                -- Rotate right by 2
-                shifted_byte <= rx_data(1 DOWNTO 0) & rx_data(7 DOWNTO 2);
+                shifted_byte <= rx_data(5 DOWNTO 0) & rx_data(7 DOWNTO 6);    -- L2
             WHEN OTHERS =>
-                -- Safety catch for simulation (handles 'X', 'U' etc.)
-                shifted_byte <= rx_data;
+                shifted_byte <= rx_data(1 DOWNTO 0) & rx_data(7 DOWNTO 2);    -- R2
         END CASE;
+    END PROCESS;
+
+    -- ========================================================
+    -- TX Scheduler
+    -- ========================================================
+    tx_sched_proc : PROCESS(clk)
+    BEGIN
+        IF rising_edge(clk) THEN
+            IF rst = '1' THEN
+                tx_start      <= '0';
+                tx_data_reg   <= (OTHERS => '0');
+                pending_valid <= '0';
+                pending_byte  <= (OTHERS => '0');
+            ELSE
+                tx_start <= '0';
+
+                -- Send pending byte when TX is idle
+                IF pending_valid = '1' AND tx_busy = '0' THEN
+                    tx_data_reg   <= pending_byte;
+                    tx_start      <= '1';
+                    pending_valid <= '0';
+                END IF;
+
+                -- Capture latest shifted byte from RX
+                IF rx_done = '1' THEN
+                    pending_byte  <= shifted_byte;
+                    pending_valid <= '1';
+                END IF;
+            END IF;
+        END IF;
     END PROCESS;
 
 END structural;
